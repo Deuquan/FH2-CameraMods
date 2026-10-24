@@ -1,0 +1,5 @@
+out/
+dist/
+__pycache__/
+build_log.txt
+*.log
