@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 rem === Set this to your GitHub repo, e.g. SomeUser/FH2-CameraMods ===
-set "REPO=CHANGE_ME/CHANGE_ME"
+set "REPO=Deuquan/FH2-CameraMods"
 if "%REPO%"=="CHANGE_ME/CHANGE_ME" ( echo update.bat is not configured yet ^(REPO is not set^). & pause & exit /b 1 )
 set "TMP_DIR=%TEMP%\CamModsUpdate"
 rmdir /s /q "%TMP_DIR%" 2>nul & mkdir "%TMP_DIR%"
