@@ -192,6 +192,12 @@ static LRESULT CALLBACK wheel_hook_proc(int code, WPARAM wparam, LPARAM lparam) 
 
 static DWORD WINAPI wheel_thread(LPVOID unused) {
     (void)unused;
+    {   /* Hook-Thread mit hoher Prioritaet: SetCursorPos wartet sonst auf ihn (Ruckler auf schwachen PCs) */
+        typedef BOOL (WINAPI *FnSetPrio)(HANDLE, int);
+        HMODULE k32 = LoadLibraryExW(L"kernel32.dll", 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        FnSetPrio sp = k32 ? (FnSetPrio)(uintptr_t)GetProcAddress(k32, "SetThreadPriority") : 0;
+        if (sp) sp((HANDLE)(intptr_t)-2, 15);
+    }
     HMODULE user32 = LoadLibraryExW(L"user32.dll", 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
     wheel_hook_handle = api_set_hook(14, wheel_hook_proc, (HINSTANCE)user32, 0);
     MSG message;
@@ -551,7 +557,7 @@ static void drone_frame(void *camera, float dt, unsigned view) {
                 mouse_yaw_rate += (dx * 0.0018f / dt - mouse_yaw_rate) * k;
                 mouse_pitch_rate += (-dy * 0.0018f / dt - mouse_pitch_rate) * k;
             }
-            api_set_cursor(cx, cy);
+            if (point.x != cx || point.y != cy) api_set_cursor(cx, cy); /* nur wenn die Maus sich bewegt hat */
             mouse_primed = 1;
         }
     }
@@ -1096,6 +1102,22 @@ static void log_foreground(void) {
     put(" class="); put(c); put(" title="); put(x); put("\r\n"); flush();
 }
 
+/* Messung: wie viel Zeit der Mod pro Frame braucht (Log alle 600 Frames im Drohnen-Modus) */
+typedef BOOL (WINAPI *FnQPerf)(LARGE_INTEGER *);
+static unsigned long long perf_now_us(void) {
+    static FnQPerf pc, pf; static LARGE_INTEGER freq; static int init;
+    if (!init) {
+        init = 1;
+        HMODULE k = LoadLibraryExW(L"kernel32.dll", 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (k) { pc = (FnQPerf)(uintptr_t)GetProcAddress(k, "QueryPerformanceCounter"); pf = (FnQPerf)(uintptr_t)GetProcAddress(k, "QueryPerformanceFrequency"); }
+        if (pf) pf(&freq);
+    }
+    LARGE_INTEGER n; n.QuadPart = 0;
+    if (!pc || freq.QuadPart <= 0) return 0;
+    pc(&n);
+    return (unsigned long long)n.QuadPart * 1000000ull / (unsigned long long)freq.QuadPart;
+}
+
 void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, int after_update, float dt) {
     {
         static int slots_logged;
@@ -1301,7 +1323,19 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
     }
     drone_input_enabled = focused;
     if (drone_on && view < 7) {
+        static unsigned long long perf_sum, perf_max; static unsigned perf_n; static float perf_dt;
+        unsigned long long t0 = perf_now_us();
         drone_frame(camera, dt, view);
+        unsigned long long used_us = perf_now_us() - t0;
+        perf_sum += used_us; if (used_us > perf_max) perf_max = used_us; perf_dt += dt;
+        if (++perf_n >= 600) {
+            put("PERF view="); put_number(view);
+            put(" fps="); put_number(perf_dt > 0.0f ? (unsigned)(600.0f / perf_dt) : 0u);
+            put(" mod_avg_us="); put_number((unsigned)(perf_sum / 600ull));
+            put(" mod_max_us="); put_number((unsigned)perf_max);
+            put("\r\n"); flush();
+            perf_sum = 0; perf_max = 0; perf_n = 0; perf_dt = 0.0f;
+        }
     }
 }
 

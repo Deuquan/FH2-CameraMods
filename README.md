@@ -4,6 +4,8 @@ Fork/add-on of [ForzaHorizon2_ExtraOptions](https://github.com/RokkuDayo/ForzaHo
 (GPL-licensed, see LICENSE). All credit for the base mod goes to the original author.
 This fork adds extra cameras for the Azimuth (PC) version of Forza Horizon 2.
 
+**Publisher / Author of the camera mods:** Deuquan ([GitHub](https://github.com/Deuquan/FH2-CameraMods))
+
 > Unofficial. Not affiliated with the original author. Use at your own risk, offline / single player only.
 
 ## Features
@@ -18,8 +20,12 @@ This fork adds extra cameras for the Azimuth (PC) version of Forza Horizon 2.
 
 ## Install
 1. Download the ZIP from the Releases page and extract it anywhere.
-2. Double-click `install.bat`. It finds/asks for your Azimuth folder (where `azimuth.exe` is), backs up your
-   current `winmm.dll` and installs the mod. Your existing `FH2_ExtraOptions.ini` is kept.
+2. Double-click `install.bat`. If it doesn't find `azimuth.exe` next to itself, a folder window opens - select your
+   Azimuth folder (the one that contains `azimuth.exe`). The installer backs up your current `winmm.dll` and installs
+   the mod. Your existing `FH2_ExtraOptions.ini` is kept if the mod accepts it; otherwise it is saved as
+   `FH2_ExtraOptions.ini.old` and the default INI is installed.
+   - Windows may warn that the publisher could not be verified. The scripts are plain text and not digitally signed,
+     so click **Run** / **More info -> Run anyway**. You can open the `.bat` files in Notepad to check them.
 3. Start the game via Azimuth as usual.
 
 `uninstall.bat` restores your original `winmm.dll`. `update.bat` downloads the newest release (see below).

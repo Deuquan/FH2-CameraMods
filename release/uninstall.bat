@@ -4,8 +4,13 @@ cd /d "%~dp0"
 set "TARGET="
 if exist "%~dp0azimuth.exe" set "TARGET=%~dp0"
 if not defined TARGET (
-  set /p "TARGET=Paste the folder that contains azimuth.exe: "
-  set "TARGET=!TARGET:"=!"
+  echo Azimuth folder not found next to this installer. A window will open - please select it.
+  for /f "usebackq delims=" %%F in (`powershell -NoProfile -STA -ExecutionPolicy Bypass -File "%~dp0pick_folder.ps1"`) do set "TARGET=%%F"
+  if not defined TARGET (
+    echo No folder selected.
+    set /p "TARGET=Or paste the folder that contains azimuth.exe: "
+    set "TARGET=!TARGET:"=!"
+  )
 )
 for %%I in ("!TARGET!\.") do set "TARGET=%%~fI"
 if not exist "!TARGET!\azimuth.exe" ( echo ERROR: azimuth.exe not found. & pause & exit /b 1 )
