@@ -4,6 +4,8 @@ Fork/add-on of [ForzaHorizon2_ExtraOptions](https://github.com/RokkuDayo/ForzaHo
 (GPL-licensed, see LICENSE). All credit for the base mod goes to the original author.
 This fork adds extra cameras for the Azimuth (PC) version of Forza Horizon 2.
 
+**Current version: v1.0.3** - based on Extra Options 0.3.2, tested with Azimuth 1.0.2.
+
 **Publisher / Author of the camera mods:** Deuquan ([GitHub](https://github.com/Deuquan/FH2-CameraMods))
 
 > Unofficial. Not affiliated with the original author. Use at your own risk, offline / single player only.

@@ -5,6 +5,8 @@ typedef struct {
     int toggle, cancel, focused;
 } KeyboardInput;
 
-KeyboardInput game_input_read(void);
+int game_key_down(unsigned key);
+int game_triggers_down(unsigned triggers);
 int game_input_key_down(int virtual_key);
+KeyboardInput game_input_read(void);
 #endif

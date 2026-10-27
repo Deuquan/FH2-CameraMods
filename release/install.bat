@@ -29,6 +29,10 @@ if exist "!TARGET!\winmm.dll" if not exist "!TARGET!\winmm.dll.orig" (
   echo Backup saved: winmm.dll.orig
 )
 copy /y "%SRC%winmm.dll" "!TARGET!\winmm.dll" >nul || ( echo ERROR: copy failed. & pause & exit /b 1 )
+if exist "%SRC%mods" (
+  xcopy /e /i /y "%SRC%mods" "!TARGET!\mods" >nul
+  echo Installed Extra Options addons ^(mods folder^)
+)
 if exist "!TARGET!\FH2_ExtraOptions.ini" (
   powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%check_ini.ps1" "!TARGET!\FH2_ExtraOptions.ini"
   if errorlevel 1 (

@@ -1,5 +1,7 @@
 #include "runtime.h"
 #include "features.h"
+#include "features/addons.h"
+#include "features/plugins.h"
 #include "features/video_settings.h"
 #include "logging.h"
 #include "patch_engine.h"
@@ -33,7 +35,7 @@ static void log_enabled_features(const wchar_t *settings_directory, const ModOpt
                    "file lookup outside DLL initialization.\r\n");
     }
     if (options->autodrive) {
-        log_append("AUTODRIVE: experimental F2 GPS/AI hooks installed; cinematic "
+        log_append("AUTODRIVE: configurable GPS/AI shortcuts installed; cinematic "
                    "delay is 3 "
                    "seconds.\r\n");
     }
@@ -41,9 +43,12 @@ static void log_enabled_features(const wchar_t *settings_directory, const ModOpt
         log_append("UPGRADES: virtual All Rims category enabled; database file "
                    "unchanged.\r\n");
     }
-    log_append("VEHICLE: right-stick press toggles headlights; stationary "
-               "2-second hold toggles "
-               "supported roofs.\r\n");
+    if (options->unlock_aero_tuning) {
+        log_append("WARNING: experimental aero unlock uses Forza aero ranges and "
+                   "can change PI "
+                   "and handling, including at default tuning values.\r\n");
+    }
+    log_append("VEHICLE: configurable shortcuts enabled; roof hold is 1500 ms and signal hold is 500 ms.\r\n");
     log_append("SETTINGS: Video and HUD menu hooks installed; awaiting menu "
                "resources.\r\n");
     if (options->custom_gamerpic) {
@@ -57,6 +62,7 @@ int runtime_initialize(unsigned char *game_image, const wchar_t *executable_path
                        const wchar_t *settings_directory) {
     ModOptions options;
     settings_defaults(&options);
+    addons_configure(executable_path);
     gamerpic_set_directory(settings_directory);
     log_reset();
     int initialized = settings_read(settings_directory, &options);
@@ -68,6 +74,7 @@ int runtime_initialize(unsigned char *game_image, const wchar_t *executable_path
     if (initialized && options.enabled) {
         initialized = verify_game_file(executable_path);
     }
+    plugins_configure(game_image, executable_path, initialized && options.enabled);
     if (initialized) {
         initialized = patch_engine_apply(game_image, &options);
     }
