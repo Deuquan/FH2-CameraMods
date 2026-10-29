@@ -1,8 +1,8 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-rem Run build.bat first. Builds dist\FH2-CameraMods-v1.0.3.zip + .sha256
-set "NAME=FH2-CameraMods-v1.0.3"
+rem Run build.bat first. Builds dist\FH2-CameraMods-v1.0.4.zip + .sha256
+set "NAME=FH2-CameraMods-v1.0.4"
 if not exist "out\winmm.dll" ( echo Run build.bat first. & pause & exit /b 1 )
 rmdir /s /q "dist" 2>nul & mkdir "dist\%NAME%"
 copy out\winmm.dll "dist\%NAME%\" >nul

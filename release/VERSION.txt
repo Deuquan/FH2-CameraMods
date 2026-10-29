@@ -1,1 +1,1 @@
-CamMods v1.0.3
+CamMods v1.0.4
