@@ -118,7 +118,7 @@ static int toggle_was_down;
 static double drone_pos[3];
 static double drone_anchor[3];
 static int walk_mode;
-static int shake_on = 1;
+static int shake_on = 0; /* default off; U toggles */
 static int walk_level_pct = 40;
 /* Bodenhoehe: Spur des Autos (x, z, Boden-y), damit die Augenhoehe am Boden bleibt (Huegel, Verfolgen) */
 enum { TRAIL_MAX = 256 };
@@ -134,8 +134,9 @@ static void trail_push(double x, double z, double g) {
 static float t_noise;
 /* Beifahrer-Modus: Kamera sitzt im Auto auf dem anderen Sitz und dreht sich mit dem Auto mit */
 static int passenger_on, passenger_side = 1, rear_on, drv_on;
+static int fix_cam; /* 0 aus, 1 Dach vorn Mitte, 2 Dashcam am Spiegel, 3 Armaturenbrett, 4 Front-Chase (von vorn): fest am Auto, ohne Effekte */
 /* Gespeicherte Sitzpositionen je Kamera: 0 Beifahrer, 1 Fahrer, 2 360-Kamera (bleiben beim Durchschalten erhalten) */
-static float prof_r[3] = {0.72f, 0.0f, 0.0f}, prof_f[3] = {0.0f, 0.20f, -3.4f}, prof_e[3] = {1.6f, 1.62f, 2.9f}, prof_z[3] = {1.0f, 1.0f, 0.5f}, prof_p[3];
+static float prof_r[7] = {0.72f, 0.0f, 0.0f, 0.36f, 0.36f, 0.36f, 0.36f}, prof_f[7] = {0.0f, 0.20f, -3.4f, 0.80f, 0.30f, 0.40f, 5.5f}, prof_e[7] = {1.6f, 1.62f, 2.9f, 1.95f, 1.60f, 1.50f, 2.0f}, prof_z[7] = {1.0f, 1.0f, 0.5f, 1.0f, 1.0f, 1.0f, 1.0f}, prof_p[7] = {0, 0, 0, 0, 0, -0.03f, -0.12f};
 static int cur_mode = -1;
 static float car_hx = 1.0f, car_hz, pch_x = 1.0f, pch_z, start_hx = 1.0f, start_hz;
 static float last_out_fwd[3];
@@ -177,6 +178,11 @@ static int mouse_primed;
 static float mouse_yaw_rate, mouse_pitch_rate;
 static float zoom_target = 1.0f, zoom_current = 1.0f;
 static void seat_mode(int m) {
+    if (cur_mode >= 3 && m != cur_mode) {
+        /* Position der festen Kameras ins Log (x100), damit sie sich gut nachstellen laesst */
+        put("FIXCAM-POS mode="); put_number((unsigned)cur_mode); put(" r*100="); put_signed((int)(seat_r * 100.0f)); put(" f*100="); put_signed((int)(seat_f * 100.0f));
+        put(" e*100="); put_signed((int)(eye_height * 100.0f)); put(" pitch*100="); put_signed((int)(drone_pitch * 100.0f)); put("\r\n"); flush();
+    }
     if (cur_mode >= 0) { prof_r[cur_mode] = seat_r; prof_f[cur_mode] = seat_f; prof_e[cur_mode] = eye_height; prof_p[cur_mode] = drone_pitch; if (cur_mode != 2) prof_z[cur_mode] = zoom_target; }
     cur_mode = m;
     if (m >= 0) { seat_r = prof_r[m]; seat_f = prof_f[m]; eye_height = prof_e[m]; drone_pitch = prof_p[m]; zoom_target = m == 2 ? 0.5f : prof_z[m]; }
@@ -344,7 +350,7 @@ static void drone_start(void *camera, unsigned view) {
         drone_hz = forward[2] / length;
     }
     drone_pitch = clampf(forward[1], -1.2f, 1.2f);
-    start_hx = drone_hx; start_hz = drone_hz; car_hx = drone_hx; car_hz = drone_hz; passenger_on = 0; rear_on = 0; drv_on = 0; cs_seen = 0;
+    start_hx = drone_hx; start_hz = drone_hz; car_hx = drone_hx; car_hz = drone_hz; passenger_on = 0; rear_on = 0; drv_on = 0; fix_cam = 0; cs_seen = 0;
     drone_vel[0] = drone_vel[1] = drone_vel[2] = 0.0f;
     look_yaw_rate = look_pitch_rate = 0.0f;
     zoom_target = zoom_current = 1.0f;
@@ -366,9 +372,80 @@ static void drone_start(void *camera, unsigned view) {
     flush();
 }
 
+/* ---- Controller (XInput): linker Stick bewegen, rechter Stick umsehen, RT/LT hoch/runter, RB schnell, R3 = Fahrer an/aus ---- */
+typedef struct { unsigned packet; unsigned short buttons; unsigned char lt, rt; short lx, ly, rx, ry; } PadState;
+typedef unsigned (WINAPI *FnXGet)(unsigned, PadState *);
+static float pad_lx, pad_ly, pad_rx, pad_ry, pad_lt, pad_rt;
+static unsigned short pad_btn;
+static int pad_ok, pad_logged;
+static float pad_dz(short v, float dz) {
+    float f = (float)v / 32767.0f, a = f < 0 ? -f : f;
+    if (a <= dz) return 0.0f;
+    a = (a - dz) / (1.0f - dz);
+    return f < 0 ? -a : a;
+}
+static void pad_poll(int focused) {
+    static FnXGet get; static int init;
+    PadState st;
+    pad_lx = pad_ly = pad_rx = pad_ry = pad_lt = pad_rt = 0.0f; pad_btn = 0; pad_ok = 0;
+    if (!init) {
+        init = 1;
+        HMODULE x = LoadLibraryExW(L"xinput1_4.dll", 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!x) x = LoadLibraryExW(L"xinput9_1_0.dll", 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (x) get = (FnXGet)(uintptr_t)GetProcAddress(x, "XInputGetState");
+    }
+    if (!get || !focused) return;
+    for (unsigned i = 0; i < 4; ++i) {
+        unsigned char *z = (unsigned char *)&st; for (unsigned k = 0; k < sizeof(st); ++k) z[k] = 0;
+        if (get(i, &st) == 0) {
+            pad_ok = 1; pad_btn = st.buttons;
+            pad_lx = pad_dz(st.lx, 0.24f); pad_ly = pad_dz(st.ly, 0.24f); pad_rx = pad_dz(st.rx, 0.24f); pad_ry = pad_dz(st.ry, 0.24f);
+            pad_lt = st.lt > 30 ? (float)(st.lt - 30) / 225.0f : 0.0f; pad_rt = st.rt > 30 ? (float)(st.rt - 30) / 225.0f : 0.0f;
+            if (!pad_logged) { pad_logged = 1; put("DRONE-PAD xinput controller found\r\n"); flush(); }
+            return;
+        }
+    }
+}
+/* Fahrer aus: dem Spiel die Gameplay-Eingabe wegnehmen (Eingabe-Kontext), damit Sticks/Tasten nur die Kamera steuern */
+static unsigned char *gl_addr;
+static unsigned gl_orig;
+static int gl_locked, driver_on, hide_mode, pad_mode; /* pad_mode: 0 Tastatur, 1 Controller steuert Drohne/Walk */
+static unsigned char *gameplay_perm_addr(void) {
+    void *ctl; unsigned short btn;
+    struct { void *proxy, **blocks; size_t capacity, start, count; } c;
+    void *block;
+    if (autodrive_game_buttons(&ctl, &btn) < 0 || !memory_read((unsigned char *)ctl + 0x38, &c, sizeof(c))) return 0;
+    if (!c.count || !c.blocks || !c.capacity || c.capacity > 4096 || (c.capacity & (c.capacity - 1)) || c.count > c.capacity * 2) return 0;
+    if (!memory_read_pointer(c.blocks + ((c.start / 2) & (c.capacity - 1)), &block) || !block) return 0;
+    return (unsigned char *)block + (c.start % 2) * 8 + 4;
+}
+static void gameplay_lock(int want) {
+    unsigned v;
+    if (gl_locked && (!want || gameplay_perm_addr() != gl_addr)) {
+        if (memory_read(gl_addr, &v, 4) && memory_is_writable(gl_addr, 4)) { v = (v & ~1u) | (gl_orig & 1u); memory_copy(gl_addr, &v, 4); }
+        gl_locked = 0; put("DRIVER-INPUT restored\r\n"); flush();
+    }
+    if (!want) return;
+    unsigned char *a = gameplay_perm_addr();
+    if (!a || !memory_read(a, &v, 4) || !memory_is_writable(a, 4)) return;
+    if (!gl_locked) {
+        if (!(v & 1u)) return; /* Menue/Pause: nicht anfassen */
+        gl_addr = a; gl_orig = v; gl_locked = 1; put("DRIVER-INPUT locked\r\n"); flush();
+    }
+    if (v & 1u) { v &= ~1u; memory_copy(a, &v, 4); }
+}
+
+/* Das Spiel dreht im Cockpit mit dem rechten Stick selbst die Kamera (Werte bei Controller +0xb0 Betrag, +0xb4 X, +0xb8 Y): waehrend wir die Kamera steuern, auf 0 setzen */
+static void pad_block_game_look(void) {
+    void *c; unsigned short b; float z[3] = {0.0f, 0.0f, 0.0f};
+    if (autodrive_game_buttons(&c, &b) < 0) return;
+    unsigned char *q = (unsigned char *)c + 0xb0;
+    if (memory_is_writable(q, 12)) memory_copy(q, z, 12);
+}
 static void drone_stop(void) {
+    gameplay_lock(0); driver_on = 0; hide_mode = 0; pad_mode = 0;
     seat_mode(-1); /* aktuelle Sitzposition speichern */
-    drone_on = 0; passenger_on = 0; rear_on = 0; drv_on = 0; cinema_on = 0;
+    drone_on = 0; passenger_on = 0; rear_on = 0; drv_on = 0; fix_cam = 0; cinema_on = 0;
     cur_roll = 0.0f; bank_roll = 0.0f;
     drone_camera_ptr = 0;
     zoom_target = zoom_current = 1.0f;
@@ -426,7 +503,7 @@ static void drone_frame(void *camera, float dt, unsigned view) {
                 float pfy, phl;
                 if (cs_ok && drift_camera_car_pitch(camera, &pfy, &phl) && phl > 0.1f) {
                     float tp = clampf(my_atan2(pfy, phl), -0.6f, 0.6f);
-                    car_pitch_s += (tp - car_pitch_s) * clampf(dt * 8.0f, 0.0f, 1.0f);
+                    car_pitch_s += (tp - car_pitch_s) * (fix_cam ? 1.0f : clampf(dt * 8.0f, 0.0f, 1.0f));
                 }
             }
             {
@@ -434,7 +511,7 @@ static void drone_frame(void *camera, float dt, unsigned view) {
                 double ex = g[0] - last_written[0], ey = g[1] - last_written[1], ez = g[2] - last_written[2];
                 if (!have_written || ex * ex + ey * ey + ez * ez > 1.0e-4) {
                     double cx = g[0] - car_pos[0], cy = g[1] - car_pos[1], cz = g[2] - car_pos[2];
-                    if (passenger_on && cs_ok && have_car_pos && cx * cx + cy * cy + cz * cz < 9.0 && dt > 0.0f && dt < 0.1f) {
+                    if (passenger_on && !fix_cam && cs_ok && have_car_pos && cx * cx + cy * cy + cz * cz < 9.0 && dt > 0.0f && dt < 0.1f) {
                         /* Beifahrer: Auto mit der Geschwindigkeit weiterrechnen und mit ca. 0,3 s Traegheit zur Spiel-Kamera nachfuehren, damit der Kopf ruhig bleibt */
                         car_pos[0] += (double)(cs_v[0] * dt); car_pos[2] += (double)(cs_v[2] * dt);
                         double kc = (double)clampf(dt * 3.0f, 0.0f, 1.0f);
@@ -467,7 +544,7 @@ static void drone_frame(void *camera, float dt, unsigned view) {
                         cs_sign = (cs_fx * drone_hx + cs_fz * drone_hz) < 0.0f ? -1.0f : 1.0f;
                         pad_sign_pending = 0;
                     }
-                    float k5 = cs_seen ? clampf(dt * 20.0f, 0.0f, 1.0f) : 1.0f;
+                    float k5 = (cs_seen && !fix_cam) ? clampf(dt * 20.0f, 0.0f, 1.0f) : 1.0f; /* feste Kameras: Richtung des Autos ohne Verzoegerung */
                     float nx5 = car_hx + (cs_fx * cs_sign - car_hx) * k5, nz5 = car_hz + (cs_fz * cs_sign - car_hz) * k5;
                     float nl5 = my_sqrt(nx5 * nx5 + nz5 * nz5);
                     if (nl5 > 0.2f) { car_hx = nx5 / nl5; car_hz = nz5 / nl5; }
@@ -733,20 +810,31 @@ static void drone_frame(void *camera, float dt, unsigned view) {
         cin_dur = 0.0f; cin_pause = 0.0f; cin_yv = cin_pv = 0.0f;
         { float kb = clampf(dt * 2.0f, 0.0f, 1.0f); cin_lat -= cin_lat * kb; cin_fw -= cin_fw * kb; cin_rl -= cin_rl * kb; }
     }
-    float yaw_in = axis(0x27, 0, 0x25, 0);
-    float pitch_in = axis(0x26, 0, 0x28, 0);
+    pad_poll(autodrive_game_window_focused());
+    /* Rechter Stick schaut sich in den Cockpit-Kameras (Beifahrer/Fahrersitz/feste Kameras) immer um, sonst nur im Controller-Modus */
+    int pad_look = pad_mode; /* Controller-Blick nur im Controller-Modus (Drohne/Walk); in den Cockpit-Kameras dreht das Spiel selbst */
+    float yaw_in = clampf((pad_mode ? 0.0f : axis(0x27, 0, 0x25, 0)) + (pad_look ? pad_rx : 0.0f), -1.0f, 1.0f);
+    float pitch_in = clampf((pad_mode ? 0.0f : axis(0x26, 0, 0x28, 0)) + (pad_look ? pad_ry : 0.0f), -1.0f, 1.0f);
     float smooth = clampf(dt * 8.0f, 0.0f, 1.0f);
     look_yaw_rate += (yaw_in * 1.3f - look_yaw_rate) * smooth;
     look_pitch_rate += (pitch_in * 1.0f - look_pitch_rate) * smooth;
     rotate_heading(look_yaw_rate * dt * look_scale);
-    drone_pitch = clampf(drone_pitch + look_pitch_rate * dt * look_scale, -1.45f, 1.45f);
+    {
+        float pl = (passenger_on && !rear_on && !cinema_on) ? 0.95f : 1.45f; /* im Auto nicht durchs Dach schauen */
+        drone_pitch = clampf(drone_pitch + look_pitch_rate * dt * look_scale, -pl, pl);
+    }
 
     /* Bewegung: W/S vor-zurueck, A/D seitlich, E/R hoch, Q/F runter, Shift = schnell */
-    float fast = game_input_key_down(0x11) ? 0.08f : (game_input_key_down(0x10) ? 4.0f : 1.0f); /* Strg = sehr langsam */
+    int pad_fast = pad_mode && (pad_btn & 0x0200u) != 0;
+    float fast = game_input_key_down(0x11) ? 0.08f : ((game_input_key_down(0x10) || pad_fast) ? 4.0f : 1.0f); /* Strg = sehr langsam */
     float speed = 14.0f * fast;
     float move_f = axis(0x57, 0, 0x53, 0);
     float move_r = axis(0x44, 0, 0x41, 0);
     float move_u = axis(0x45, 0x52, 0x51, 0x46);
+    if (pad_mode) { /* Controller-Modus: Tastatur ignorieren; Stick bewegt nur frei fliegend/gehend, im Auto bleibt er zum Fahren */
+        move_f = move_r = move_u = 0.0f;
+        if (!passenger_on) { move_f = pad_ly; move_r = pad_lx; move_u = clampf(pad_rt - pad_lt, -1.0f, 1.0f); }
+    }
     float cp = my_cos(drone_pitch), sp = my_sin(drone_pitch);
     float target[3];
     target[0] = (cp * drone_hx * move_f + drone_hz * move_r) * speed;
@@ -754,7 +842,7 @@ static void drone_frame(void *camera, float dt, unsigned view) {
     target[2] = (cp * drone_hz * move_f - drone_hx * move_r) * speed;
     if (walk_mode) {
         /* Gehen: nur waagerecht, Tempo 1,5 m/s, Shift = rennen, Strg = ganz langsam */
-        float walk_speed = game_input_key_down(0x11) ? 0.5f : (game_input_key_down(0x10) ? 3.8f : 1.5f);
+        float walk_speed = game_input_key_down(0x11) ? 0.5f : ((game_input_key_down(0x10) || pad_fast) ? 3.8f : 1.5f);
         target[0] = (drone_hx * move_f + drone_hz * move_r) * walk_speed;
         target[1] = 0.0f;
         target[2] = (drone_hz * move_f - drone_hx * move_r) * walk_speed;
@@ -783,7 +871,7 @@ static void drone_frame(void *camera, float dt, unsigned view) {
                 ground_ref += (double)(move_u * (game_input_key_down(0x10) ? 6.0f : 2.5f) * dt);
             }
         }
-        eye_height = clampf(eye_height + move_u * 0.6f * dt, 0.4f, rear_on ? 4.5f : 1.9f);
+        eye_height = clampf(eye_height + move_u * 0.6f * dt, 0.4f, (rear_on || fix_cam == 4) ? 4.5f : (fix_cam ? 2.3f : 1.9f));
         float ws = clampf(dt * 5.0f, 0.0f, 1.0f);
         dt_smooth = (dt_smooth <= 0.0f || dt > 0.1f) ? dt : dt_smooth + (dt - dt_smooth) * 0.15f;
         drone_vel[0] += (target[0] - drone_vel[0]) * ws;
@@ -797,10 +885,10 @@ static void drone_frame(void *camera, float dt, unsigned view) {
             float cr = pch_x * car_hz - pch_z * car_hx; /* -sin(Drehung) */
             float cd = pch_x * car_hx + pch_z * car_hz;
             if (cd > 0.1f) rotate_heading(-my_atan(cr / cd));
-            if (!rear_on && !cinema_on) {
+            if (!rear_on && !cinema_on && fix_cam != 4) {
                 /* Blick im Auto begrenzen: Beifahrer ca. 75 Grad, Fahrer ca. 100 Grad nach links/rechts, nie nach hinten */
                 float crd = drone_hx * car_hz - drone_hz * car_hx, cdd = drone_hx * car_hx + drone_hz * car_hz;
-                float rel = my_atan2(crd, cdd), lim = drv_on ? 1.75f : 1.30f;
+                float rel = my_atan2(crd, cdd), lim = (drv_on || fix_cam) ? 1.75f : 1.30f;
                 if (rel > lim) rotate_heading(lim - rel); else if (rel < -lim) rotate_heading(-lim - rel);
             }
             if (drv_on) {
@@ -818,7 +906,7 @@ static void drone_frame(void *camera, float dt, unsigned view) {
             pch_x = car_hx; pch_z = car_hz;
             double rx = (double)car_hz, rz = (double)(-car_hx);
             /* WASD verschiebt den Sitz (jeder Sitz ist anders); die Position bleibt danach gespeichert */
-            seat_f = clampf(seat_f + move_f * 0.6f * dt, rear_on ? -6.0f : -2.0f, 2.0f);
+            seat_f = clampf(seat_f + move_f * 0.6f * dt, rear_on ? -6.0f : -2.0f, fix_cam == 4 ? 9.0f : 2.0f);
             seat_r = clampf(seat_r + move_r * 0.6f * dt, -1.6f, 1.6f);
             if (seat_r > 0.15f) passenger_side = 1; else if (seat_r < -0.15f) passenger_side = -1;
             double off = (double)seat_r;
@@ -835,7 +923,7 @@ static void drone_frame(void *camera, float dt, unsigned view) {
             walk_amp = 0.0f;
             {
                 /* Kopf: Feder-Daempfer, nickt bei Gas nach hinten und beim Bremsen nach vorn, mit leichtem Nachschwingen */
-                float tgt = rear_on ? 0.0f : clampf(acc_s * 0.014f, -0.20f, 0.20f);
+                float tgt = (rear_on || fix_cam) ? 0.0f : clampf(acc_s * 0.014f, -0.20f, 0.20f);
                 head_v += ((tgt - head_p) * 45.0f - head_v * 9.0f) * dt;
                 head_p = clampf(head_p + head_v * dt, -0.30f, 0.30f);
             }
@@ -944,6 +1032,7 @@ static void drone_frame(void *camera, float dt, unsigned view) {
         shake_pitch += bump_p * 0.5f;
     } else { bump_p = 0.0f; bump_v = 0.0f; }
     if (!shake_on && !walk_mode) { shake_yaw = shake_pitch = bob = lateral = 0.0f; }
+    if (fix_cam) { shake_yaw = shake_pitch = bob = lateral = 0.0f; roll_out = 0.0f; bank_roll = 0.0f; head_p = 0.0f; head_v = 0.0f; }
     cur_roll = roll_out + cin_rl;
     if (!walk_mode) bank_roll = 0.0f;
     float sc = my_cos(shake_yaw), ss = my_sin(shake_yaw);
@@ -1161,7 +1250,7 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
         }
     }
     toggle_was_down = toggle;
-    static int req_m, req_x, req_h;
+    static int req_m, req_x, req_h, req_fix;
     static unsigned long long pad_arm;
     if (pad_arm) {
         if (drone_on || GetTickCount64() - pad_arm > 3000ull) pad_arm = 0;
@@ -1180,7 +1269,9 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
             if (!drone_on) {
                 if (view >= 1 && view <= 3) { chase_on = !chase_on; put(chase_on ? "CHASE-CAM on\r\n" : "CHASE-CAM off\r\n"); flush(); } /* in der Verfolger-Ansicht: Effekt an/aus */
                 else pad_arm = GetTickCount64();
-            } else if (rear_on) { drone_stop(); chase_on = 1; put("CHASE-CAM on\r\n"); flush(); }
+            } else if (fix_cam == 4) { drone_stop(); chase_on = 1; put("CHASE-CAM on\r\n"); flush(); }
+            else if (fix_cam) req_fix = fix_cam + 1;
+            else if (rear_on) req_fix = 1;
             else if (passenger_on && !drv_on) req_h = 1;
             else if (passenger_on) req_x = 1;
             else req_m = 1;
@@ -1191,7 +1282,7 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
         int l3 = autodrive_game_buttons(&ctl, &btn) >= 0 && (btn & 0x0040u) != 0u; /* L3 (linker Stick druecken) */
         int yd = (focused && game_input_key_down(0x59)) || l3;                      /* Y bzw. L3: Blick wieder nach vorn */
         if (yd && !yk && !(l3 && l3_was) && drone_on && passenger_on && !cinema_on) {
-            drone_hx = car_hx; drone_hz = car_hz; drone_pitch = 0.0f; pend_yaw = pend_pitch = 0.0f;
+            { float ys = fix_cam == 4 ? -1.0f : 1.0f; drone_hx = car_hx * ys; drone_hz = car_hz * ys; } drone_pitch = 0.0f; pend_yaw = pend_pitch = 0.0f;
             look_yaw_rate = look_pitch_rate = 0.0f; mouse_yaw_rate = mouse_pitch_rate = 0.0f;
         }
         yk = yd; l3_was = l3;
@@ -1221,7 +1312,7 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
             passenger_on = !passenger_on;
             seat_ok = 0; cinema_on = 0;
             if (rear_on) { rear_on = 0; zoom_target = 1.0f; }
-            drv_on = 0;
+            drv_on = 0; fix_cam = 0;
             if (passenger_on) {
                 if (!walk_mode) { walk_mode = 1; ground_ref = drone_anchor[1] - 1.15; trail_n = 0; trail_head = 0; eye_height = 1.6f; }
                 if (gfh_fresh && cs_seen) {
@@ -1254,24 +1345,66 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
                     drone_hx = car_hx; drone_hz = car_hz; drone_pitch = 0.0f; pend_yaw = pend_pitch = 0.0f;
                     focus_on = 0; follow_on = 0;
                 } else drv_on = 0;
-                cinema_on = 0; rear_on = 1; seat_mode(2); zoom_target = 0.5f;
+                fix_cam = 0; cinema_on = 0; rear_on = 1; seat_mode(2); zoom_target = 0.5f;
             } else {
                 rear_on = 0; passenger_on = 0; seat_ok = 0; seat_mode(-1); zoom_target = 1.0f;
             }
             put(rear_on ? "DRONE-REAR360 on\r\n" : "DRONE-REAR360 off\r\n"); flush();
         }
         xk = xd;
+        {
+            static int nk, bk, ik;
+            int id = focused && game_input_key_down(0x49); /* I: Steuerung Tastatur <-> Controller wechseln */
+            if (id && !ik) { pad_mode = !pad_mode; put(pad_mode ? "DRONE-INPUT controller\r\n" : "DRONE-INPUT keyboard\r\n"); flush(); }
+            ik = id;
+            int nd = focused && game_input_key_down(0x4E); /* N bzw. RB+X: Auto-Eingabe sperren an/aus */
+            int bd = (pad_btn & 0x0200u) != 0 && (pad_btn & 0x4000u) != 0; /* RB + X */
+            if (drone_on && ((nd && !nk) || (bd && !bk))) {
+                driver_on = !driver_on;
+                put(driver_on ? "DRONE-DRIVER on\r\n" : "DRONE-DRIVER off\r\n"); flush();
+            }
+            nk = nd; bk = bd;
+            gameplay_lock(drone_on && focused && !passenger_on && !driver_on);
+        }
+        static int fk[5];
+        for (int fn = 1; fn <= 4; ++fn) {
+            /* Tasten 1-4: Dach / Dashcam / Armaturenbrett / Front-Chase. Fest am Auto, keine Effekte, nur per Maus/Stick drehbar */
+            int fd = (focused && game_input_key_down(0x30 + fn)) || req_fix == fn;
+            if (fd && !fk[fn] && drone_on) {
+                if (fix_cam == fn) {
+                    fix_cam = 0; rear_on = 0; passenger_on = 0; seat_ok = 0; seat_mode(-1); zoom_target = 1.0f;
+                } else {
+                    if (!passenger_on) {
+                        passenger_on = 1; seat_ok = 0;
+                        if (!walk_mode) { walk_mode = 1; ground_ref = drone_anchor[1] - 1.15; trail_n = 0; trail_head = 0; }
+                        if (gfh_fresh && cs_seen) {
+                            float dd = car_hx * gfh_x + car_hz * gfh_z;
+                            if (dd < -0.2f) { cs_sign = -cs_sign; car_hx = -car_hx; car_hz = -car_hz; }
+                        }
+                    }
+                    drv_on = 0; cinema_on = 0; rear_on = 0; fix_cam = fn;
+                    pch_x = car_hx; pch_z = car_hz;
+                    { float ys = fn == 4 ? -1.0f : 1.0f; drone_hx = car_hx * ys; drone_hz = car_hz * ys; }
+                    drone_pitch = 0.0f; pend_yaw = pend_pitch = 0.0f;
+                    focus_on = 0; follow_on = 0;
+                    seat_mode(2 + fn); drone_pitch = prof_p[2 + fn]; zoom_target = 1.0f;
+                }
+                put("DRONE-FIXCAM "); put_number((unsigned)(fix_cam)); put("\r\n"); flush();
+            }
+            fk[fn] = fd;
+        }
+        req_fix = 0;
         static int hk;
         int hd = (focused && game_input_key_down(0x48)) || req_h; /* H = Fahrer-Sitz (wie Beifahrer, aber auf dem Fahrerplatz) */
         req_h = 0;
-        if (hd && !hk && drone_on && passenger_on && !rear_on) {
+        if (hd && !hk && drone_on && passenger_on && !rear_on && !fix_cam) {
             if (!drv_on) { drv_on = 1; cinema_on = 0; seat_mode(1); }
             else { drv_on = 0; seat_mode(0); }
             put(drv_on ? "DRONE-DRIVERSEAT on\r\n" : "DRONE-DRIVERSEAT off\r\n"); flush();
         }
         hk = hd;
         int cd2 = focused && game_input_key_down(0x43); /* C = Seite wechseln */
-        if (cd2 && !ck2 && drone_on && passenger_on && !rear_on && !drv_on) { passenger_side = -passenger_side; seat_r = -seat_r; put("DRONE-PASSENGER side\r\n"); flush(); }
+        if (cd2 && !ck2 && drone_on && passenger_on && !rear_on && !drv_on && !fix_cam) { passenger_side = -passenger_side; seat_r = -seat_r; put("DRONE-PASSENGER side\r\n"); flush(); }
         ck2 = cd2;
         static int tk;
         int td = focused && game_input_key_down(0x55); /* U = Zittern an/aus */
@@ -1286,7 +1419,7 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
         vk = vd;
         static int lk;
         int ld = focused && game_input_key_down(0x4C); /* L = Cinema-Modus (nur Beifahrer) */
-        if (ld && !lk && drone_on && passenger_on && !rear_on) { cinema_on = !cinema_on; cin_dur = 0.0f; cin_seed = qpc_lo * 2654435761u; cin_n = 0; cin_shot = -1; cin_prev = -1; cin_yv = cin_pv = 0.0f; put(cinema_on ? "DRONE-CINEMA on\r\n" : "DRONE-CINEMA off\r\n"); flush(); }
+        if (ld && !lk && drone_on && passenger_on && !rear_on && !fix_cam) { cinema_on = !cinema_on; cin_dur = 0.0f; cin_seed = qpc_lo * 2654435761u; cin_n = 0; cin_shot = -1; cin_prev = -1; cin_yv = cin_pv = 0.0f; put(cinema_on ? "DRONE-CINEMA on\r\n" : "DRONE-CINEMA off\r\n"); flush(); }
         lk = ld;
         static int gk;
         int gd = focused && game_input_key_down(0x47); /* G = Auto im Blick halten */
@@ -1345,11 +1478,22 @@ int drone_probe_owns_camera(void *camera) {
 
 int drone_probe_car_flag(int which) {
     if (which == 2) return drone_on; /* Auto in Ego-Ansicht komplett zeichnen */
+    if (which == 1) return drone_on; /* Das Spiel setzt dieses Kamera-Flag (+0x219) auf 0, sobald der rechte Stick bewegt wird, und blendet dann das Auto aus: immer an */
     return 0;
 }
 
 int drone_probe_is_on(void) { return drone_on; }
 float drone_probe_zoom(void) { return zoom_current; }
+/* Das Spiel dreht im Cockpit-Blick (rechter Stick) die Kamera selbst: Blickwinkel-Felder des Fahrer-Kamera-Objekts vor der Matrix-Berechnung auf 0, sonst dreht es doppelt */
+void drone_probe_neutralize_look(void *camera) {
+    if (!drone_on || camera != drone_camera_ptr) return;
+    static const unsigned offs[] = {0x1dc, 0x1e0, 0x1ec, 0x1f0, 0x1f4};
+    float z = 0.0f;
+    for (int i = 0; i < 5; ++i) {
+        unsigned char *q = (unsigned char *)camera + offs[i];
+        if (memory_is_writable(q, 4)) memory_copy(q, &z, 4);
+    }
+}
 void drone_probe_apply_roll(void *out) {
     if (!drone_on || !out || (cur_roll < 0.0002f && cur_roll > -0.0002f)) return;
     float rows[3][4];

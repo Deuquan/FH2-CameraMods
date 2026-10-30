@@ -51,7 +51,7 @@ Requirement: `FH2_ExtraOptions.ini` must contain `[Autodrive]` / `Enabled=1` (th
 | `L` | Cinema mode (passenger) |
 | `H` | Driver seat cam |
 | `X` | 360 cam |
-| `U` | Shake on/off |
+| `U` | Shake on/off (off by default) |
 | `Y` | Reset view to forward |
 | `J` | Enhanced chase cam on/off (default on) |
 | `K` | Enhanced ego effect on/off (default off) |

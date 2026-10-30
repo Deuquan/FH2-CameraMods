@@ -1,0 +1,9 @@
+{
+  "format_version": 1,
+  "id": "camera-mods",
+  "name": "Camera Mods",
+  "author": "Deuquan",
+  "version": "1.2.0",
+  "description": "Extra cameras for Forza Horizon 2: drone, walk mode, passenger, cinema, 360, driver seat, enhanced chase cam.",
+  "dependencies": []
+}

@@ -77,6 +77,7 @@ int drift_camera_car_pitch(void *camera, float *fy, float *hlen);
 void patch_engine_log_slots(void);
 float drone_probe_fov_divisor(void);
 void drone_probe_apply_roll(void *out);
+void drone_probe_neutralize_look(void *camera);
 void drone_probe_ego_view(int chase);
 void drone_probe_ego_update(void *camera, float dt);
 void drone_probe_ego_apply(void *camera, void *out);
