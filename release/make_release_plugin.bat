@@ -1,8 +1,8 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-rem Run build_plugin.bat first (creates out\CameraMods.dll). Builds dist\FH2-CameraMods-v1.2.0.zip + .sha256
-set "NAME=FH2-CameraMods-v1.2.0"
+rem Run build_plugin.bat first (creates out\CameraMods.dll). Builds dist\FH2-CameraMods-v1.2.1.zip + .sha256
+set "NAME=FH2-CameraMods-v1.2.1"
 if not exist "out\CameraMods.dll" ( echo Run build_plugin.bat first. & pause & exit /b 1 )
 rmdir /s /q "dist" 2>nul & mkdir "dist\%NAME%"
 xcopy /e /i /y release\plugin_pkg "dist\%NAME%" >nul

@@ -4,7 +4,7 @@ Extra cameras for the Azimuth (PC) version of Forza Horizon 2, as a **plugin for
 [Extra Options](https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions)** by RokkuDayo (GPL, see LICENSE).
 It does **not** replace `winmm.dll` - it installs into Extra Options' `mods` folder.
 
-**Current version: v1.2.0** - plugin build, tested with Extra Options 0.4.4 and the latest Azimuth.
+**Current version: v1.2.1** - plugin build, tested with Extra Options 0.4.4 and the latest Azimuth.
 
 **Publisher / Author of the camera mods:** Deuquan ([GitHub](https://github.com/Deuquan/FH2-CameraMods))
 
@@ -19,6 +19,7 @@ It does **not** replace `winmm.dll` - it installs into Extra Options' `mods` fol
 - **Enhanced chase cam** - shake/bobbing effect on the normal chase cameras
 - **Cinema mode** (passenger), look limits, auto-recenter, per-camera saved seat positions
 - Controller support (LB cycles the modded cameras)
+- Works in the replay (also while it is paused) and can hide the driver
 
 ## Install
 Requirement: the official **Extra Options 0.3.x** (`winmm.dll`) must already be installed in your Azimuth folder
@@ -59,7 +60,8 @@ Put the official Extra Options `winmm.dll` back first, then run `install.bat` of
 | `4` | Front chase cam (from the front, looking back) |
 | `U` | Shake on/off (off by default) |
 | `I` | Switch drone/walk controls between keyboard and controller (default: keyboard) |
-| `N` | Lock car input on/off in drone/walk mode (locked by default: keys/sticks only move the camera) |
+| `N` | Lock car input on/off in drone/walk mode (not locked by default: you can keep driving; lock it to only move the camera) |
+| `F9` | Hide / show the driver figure |
 | `Y` | Reset view to forward |
 | `J` | Enhanced chase cam on/off (default on) |
 | `K` | Enhanced ego effect on/off (default off) |
@@ -71,6 +73,9 @@ Put the official Extra Options `winmm.dll` back first, then run `install.bat` of
 - `LB` (from the driver view) cycles: Passenger -> Driver seat -> 360 -> off. In the chase views `LB` toggles the enhanced chase cam.
 - `L3` resets the view forward.
 - `RB` still cycles the game's own cameras.
+
+## Replay
+In a replay, switch the replay camera with `X` until you are in the cockpit (driver) view, then press `O`. Drone and walk mode work from there, also while the replay is paused.
 
 ## Notes / limitations
 - Walk mode has no terrain query: close to the car's track the ground height is estimated, further away
@@ -88,5 +93,7 @@ The older all-in-one fork (`build.bat`, modified `winmm.dll`) is still in the re
 
 ## License
 GNU GPL (inherited from ForzaHorizon2_ExtraOptions). The full source is in this repository.
+
+The roof/dashcam/dashboard/front-chase cams (1-4) are mounted to the car and have no effects (no shake, no head movement) - look around with mouse or right stick, WASD/QE adjust the mount. LB cycles: passenger, driver seat, 360, roof, dashcam, dashboard, front chase, off. Press the same key again to leave.
 
 **Controller (XInput) in drone and walk mode** (press `I` to switch to controller; keyboard movement is then ignored): left stick = move, right stick = look, RT/LT = up/down, RB = fast, RB+X = lock car input on/off (same as `N`). In the cockpit cams (passenger, driver seat, fixed cams, 360) the controller stick is not used by the mod, those cams look around with the mouse.

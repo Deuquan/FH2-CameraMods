@@ -36,6 +36,8 @@ EXPORTS
     MoveFileExW
     DeleteFileW
     GetTickCount64
+    QueryPerformanceCounter
+    QueryPerformanceFrequency
     MultiByteToWideChar
     lstrcmpiW
     lstrcpyW

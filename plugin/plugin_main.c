@@ -17,7 +17,7 @@
 #include <xmmintrin.h>
 
 #define PLUGIN_NAME "CameraMods"
-#define PLUGIN_VERSION "1.2.0"
+#define PLUGIN_VERSION "1.2.1"
 #define EXPECTED_IMAGE_SIZE 0x3a18000u
 
 static unsigned char *image;
@@ -338,6 +338,28 @@ static CameraUpdate orig_free[5];
 static DirectorUpdate orig_director[2];
 static GetFov orig_fov[6];
 
+/* Replay-Pause: das Spiel ruft die Kamera-Updates dann nicht mehr auf. Damit die Drohne trotzdem steuerbar bleibt,
+   wird der Frame-Schritt notfalls aus dem Ansichts-Matrix-Aufruf (jedes gerenderte Bild) ausgefuehrt. */
+static LARGE_INTEGER qpc_freq, last_update_qpc, last_step_qpc;
+static void note_update(void) {
+    if (!qpc_freq.QuadPart) QueryPerformanceFrequency(&qpc_freq);
+    QueryPerformanceCounter(&last_update_qpc);
+    last_step_qpc = last_update_qpc;
+}
+static void paused_step(void *camera, unsigned view) {
+    LARGE_INTEGER now;
+    if (!qpc_freq.QuadPart) QueryPerformanceFrequency(&qpc_freq);
+    if (!qpc_freq.QuadPart || !last_update_qpc.QuadPart) return;
+    QueryPerformanceCounter(&now);
+    double since_update = (double)(now.QuadPart - last_update_qpc.QuadPart) / (double)qpc_freq.QuadPart;
+    if (since_update < 0.05) return;
+    double dt = (double)(now.QuadPart - last_step_qpc.QuadPart) / (double)qpc_freq.QuadPart;
+    last_step_qpc = now;
+    if (dt <= 0.0) return;
+    if (dt > 0.1) dt = 0.016;
+    drone_probe_frame(camera, view, image, 1, (float)dt);
+}
+
 static void h_mounted(void *camera, float dt, unsigned char reset) {
     CameraView view = camera_type(camera);
     int index = (view >= CAMERA_DRIVER && view <= CAMERA_BUMPER) ? (int)(view - CAMERA_DRIVER) : -1;
@@ -345,6 +367,7 @@ static void h_mounted(void *camera, float dt, unsigned char reset) {
                                                                : (CameraUpdate)(image + NATIVE_ATTACHED_UPDATE);
     previous(camera, dt, reset);
     drone_probe_frame(camera, (unsigned)view, image, 1, dt);
+    note_update();
     if (index >= 0) {
         drone_probe_ego_view(0);
         drone_probe_ego_update(camera, dt);
@@ -365,6 +388,7 @@ static void h_follow(void *camera, float dt, unsigned char reset) {
     drone_probe_before_update(camera);
     previous(camera, dt, reset);
     drone_probe_frame(camera, (unsigned)view, image, 1, dt);
+    note_update();
     if (index >= 0) {
         drone_probe_ego_view(1);
         drone_probe_ego_update(camera, dt);
@@ -377,6 +401,9 @@ static void *h_view_matrix(void *camera, void *out) {
                 : (view >= CAMERA_CHASE && view <= CAMERA_CHASE_FAR) ? 3 + (int)(view - CAMERA_CHASE) : -1;
     if (index < 0 || !orig_vm[index]) {
         return out;
+    }
+    if (drone_probe_owns_camera(camera)) {
+        paused_step(camera, (unsigned)view);
     }
     void *result = orig_vm[index](camera, out);
     if (drone_probe_owns_camera(camera)) {
@@ -423,6 +450,7 @@ static void *h_pos_d(void *camera, double *out) {
     static void name(void *camera, float dt, unsigned char reset) {                                \
         saved(camera, dt, reset);                                                                  \
         drone_probe_frame(camera, view_id, image, 1, dt);                                          \
+        note_update();                                                                             \
     }
 UPDATE_CALLBACK(h_extra1, orig_extra1, 4)
 UPDATE_CALLBACK(h_extra2, orig_extra2, 4)
@@ -615,6 +643,7 @@ __declspec(dllexport) BOOL WINAPI FH2PluginInitialize(const FH2PluginContext *co
         return FALSE;
     }
     image = (unsigned char *)context->game_image;
+    drone_probe_set_image(image);
     install_hooks();
     log_append_value(PLUGIN_NAME ": hooks installed=", (int)hooks_installed);
     log_append_value(PLUGIN_NAME ": hooks skipped=", (int)hooks_skipped);
