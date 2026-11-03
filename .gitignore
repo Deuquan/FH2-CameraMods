@@ -4,3 +4,4 @@ __pycache__/
 build_log.txt
 *.log
 build_plugin_log.txt
+merged_source.zip
