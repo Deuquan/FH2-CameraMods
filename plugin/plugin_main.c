@@ -17,7 +17,7 @@
 #include <xmmintrin.h>
 
 #define PLUGIN_NAME "CameraMods"
-#define PLUGIN_VERSION "1.2.1"
+#define PLUGIN_VERSION "1.2.2"
 #define EXPECTED_IMAGE_SIZE 0x3a18000u
 
 static unsigned char *image;

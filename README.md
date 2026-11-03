@@ -4,7 +4,7 @@ Extra cameras for the Azimuth (PC) version of Forza Horizon 2, as a **plugin for
 [Extra Options](https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions)** by RokkuDayo (GPL, see LICENSE).
 It does **not** replace `winmm.dll` - it installs into Extra Options' `mods` folder.
 
-**Current version: v1.2.1** - plugin build, tested with Extra Options 0.4.4 and the latest Azimuth.
+**Current version: v1.2.2** - plugin build, tested with Extra Options 0.4.4 and the latest Azimuth.
 
 **Publisher / Author of the camera mods:** Deuquan ([GitHub](https://github.com/Deuquan/FH2-CameraMods))
 

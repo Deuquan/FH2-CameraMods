@@ -294,7 +294,7 @@ static float clampf(float v, float lo, float hi) {
 }
 
 static int key2(int a, int b) {
-    return game_input_key_down(a) || game_input_key_down(b);
+    return (a != 0 && game_input_key_down(a)) || (b != 0 && game_input_key_down(b)); /* Taste 0 = nicht belegt (nie abfragen) */
 }
 
 static float axis(int plus_a, int plus_b, int minus_a, int minus_b) {
