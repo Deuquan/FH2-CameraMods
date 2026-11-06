@@ -17,6 +17,7 @@ PLUGIN_SOURCES = [
     "features/drone_probe.c",
     "features/overlay_window.c",
 ]
+BRIDGE_SOURCES = ["plugin/menu_bridge.c"]  # CameraModsMenu.dll: goes into fh2-mods (FH2 Mod Platform)
 
 
 def main():
@@ -61,6 +62,14 @@ def main():
                     "/nodefaultlib", "/dynamicbase", "/nxcompat", "/Brepro",
                     "/out:" + str(output), "/implib:" + str(directory / "CameraMods.lib"),
                     *objects, *libraries], check=True)
+    # Platform bridge: the rebindable keys on the Mods page (needs FH2 Mod Platform 2.8.0+)
+    bridge_results = [compile_source(name) for name in BRIDGE_SOURCES]
+    bridge_output = output.with_name("CameraModsMenu.dll")
+    subprocess.run([str(compiler), "lld-link", "/dll", "/entry:DllMain", "/machine:x64",
+                    "/nodefaultlib", "/dynamicbase", "/nxcompat", "/Brepro",
+                    "/out:" + str(bridge_output), "/implib:" + str(directory / "CameraModsMenu.lib"),
+                    *[path for path, _ in bridge_results], *libraries], check=True)
+    print(bridge_output)
     print(f"Compiled {sum(c for _, c in results)}/{len(PLUGIN_SOURCES)} objects; "
           f"{time.monotonic() - started:.1f}s", flush=True)
     print(output)

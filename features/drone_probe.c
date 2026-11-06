@@ -64,6 +64,20 @@ static void flush(void) {
 //  Pfeiltasten = umsehen, Shift = schnell.
 // ---------------------------------------------------------------------------
 #define KEY_TOGGLE 0x4F /* O */
+#include "../plugin/cm_actions.h"
+/* Tasten sind ueber die Plattform-Bruecke (CameraModsMenu.dll) umbelegbar: dann kommen sie als Ausloeser
+   (act_stamp), sonst gelten die Standardtasten aus cm_actions.h. */
+static volatile unsigned long long act_stamp[CM_ACT_COUNT];
+static volatile int act_bridged;
+static int act_down(int a) {
+    if (!act_bridged) return game_input_key_down((int)cm_action_vk[a]);
+    unsigned long long s = act_stamp[a];
+    if (!s) return 0;
+    act_stamp[a] = 0;
+    return GetTickCount64() - (s & ~1ull) < 250ull;
+}
+void drone_probe_attach(void) { act_bridged = 1; }
+void drone_probe_trigger(int a) { if (a >= 0 && a < CM_ACT_COUNT) act_stamp[a] = GetTickCount64() | 1ull; }
 #define PI_F 3.14159265f
 
 typedef BOOL(WINAPI *GetCursorPosFn)(POINT *);
@@ -118,6 +132,10 @@ static int toggle_was_down;
 static double drone_pos[3];
 static double drone_anchor[3];
 static int walk_mode;
+static int fdr_on, fdr_direct, fdr_init, fdr_shot = -1, fdr_forced = -1, fdr_n, fdr_world, fdr_passed, fdr_anchor_pending;
+static float fdr_t, fdr_dur, fdr_pt, fdr_a0, fdr_om, fdr_side = 1.0f, fdr_r1, fdr_r2, fdr_hx = 1.0f, fdr_hz, fdr_off[3], fdr_v[3];
+static double fdr_anchor[3];
+static int walk_direct; /* Walk-Mode wurde direkt aus dem Fahren gestartet: dieselbe Taste beendet ihn wieder */
 static int shake_on = 0; /* default off; U toggles */
 static int walk_level_pct = 40;
 /* Bodenhoehe: Spur des Autos (x, z, Boden-y), damit die Augenhoehe am Boden bleibt (Huegel, Verfolgen) */
@@ -212,6 +230,13 @@ static DWORD WINAPI wheel_thread(LPVOID unused) {
     return 0;
 }
 
+/* Wine / Proton (Linux): the low-level mouse hook for the wheel is skipped there (the wheel then does nothing in
+   drone mode, everything else works). */
+static int running_under_wine(void) {
+    HMODULE nt = GetModuleHandleW(L"ntdll.dll");
+    return nt && GetProcAddress(nt, "wine_get_version") != 0;
+}
+
 static void init_mouse_api(void) {
     if (mouse_api_tried) return;
     mouse_api_tried = 1;
@@ -227,7 +252,10 @@ static void init_mouse_api(void) {
     api_get_message = (GetMessageFn)(uintptr_t)GetProcAddress(user32, "GetMessageW");
     CreateThreadFn create_thread = (CreateThreadFn)(uintptr_t)GetProcAddress(kernel, "CreateThread");
     mouse_api_ready = api_get_cursor && api_set_cursor && api_window_rect && api_foreground;
-    if (api_set_hook && api_call_next && api_get_message && create_thread && !wheel_thread_started) {
+    if (running_under_wine()) {
+        put("DRONE: Wine/Proton detected, mouse wheel hook off\r\n");
+        flush();
+    } else if (api_set_hook && api_call_next && api_get_message && create_thread && !wheel_thread_started) {
         wheel_thread_started = 1;
         HANDLE thread = create_thread(0, 0, wheel_thread, 0, 0, 0);
         if (thread) CloseHandle(thread);
@@ -323,6 +351,116 @@ static void window_center(int *cx, int *cy) {
     }
 }
 
+/* ---- Follow-Drone: du faehrst, die Drohne filmt das Auto (Verfolger, Orbit, Vorbeiflug, Seite, von oben, Aufstieg) ---- */
+#define FDR_SHOTS 8
+static void fdr_pick(int forced, void *unused) {
+    (void)unused;
+    unsigned sd = (unsigned)GetTickCount64() * 7u + (unsigned)fdr_n * 13u;
+    int ns = fdr_shot;
+    if (forced >= 0) ns = forced;
+    else for (int tries = 0; tries < 10; ++tries) { ns = (int)(vn_hash(sd + (unsigned)tries, 31) * 7.99f); if (ns != fdr_shot) break; }
+    fdr_shot = ns; ++fdr_n;
+    fdr_side = vn_hash(sd, 32) < 0.5f ? -1.0f : 1.0f;
+    fdr_r1 = vn_hash(sd, 33); fdr_r2 = vn_hash(sd, 34);
+    fdr_t = 0.0f; fdr_pt = 0.0f; fdr_passed = 0;
+    fdr_world = (ns == 3); fdr_anchor_pending = fdr_world;
+    fdr_om = (0.16f + 0.2f * fdr_r1) * fdr_side;
+    fdr_a0 = 3.14159f + fdr_side * 0.35f;
+    fdr_dur = 4.0f + 5.0f * fdr_r2;
+    if (ns == 6) fdr_dur = 7.5f;
+    zoom_target = (ns == 3) ? 1.6f : (ns == 4 ? 1.25f : 1.0f);
+    put("FOLLOW-DRONE shot "); put_number((unsigned)ns); put("\r\n"); flush();
+}
+
+static void fdr_update(float dt) {
+    float dts = clampf(dt, 0.0f, 0.05f);
+    float cvx = cs_ok ? cs_v[0] : 0.0f, cvy = cs_ok ? cs_v[1] : 0.0f, cvz = cs_ok ? cs_v[2] : 0.0f;
+    float spd = my_sqrt(cvx * cvx + cvz * cvz);
+    if (!fdr_init) {
+        fdr_hx = car_hx; fdr_hz = car_hz;
+        fdr_off[0] = (float)(drone_pos[0] - car_pos[0]); fdr_off[1] = (float)(drone_pos[1] - car_pos[1]); fdr_off[2] = (float)(drone_pos[2] - car_pos[2]);
+        fdr_v[0] = fdr_v[1] = fdr_v[2] = 0.0f;
+        fdr_forced = -1; fdr_shot = -1;
+        fdr_pick(-1, 0);
+        fdr_init = 1;
+    }
+    {
+        float kh = clampf(dts * 1.8f, 0.0f, 1.0f);
+        float nx = fdr_hx + (car_hx - fdr_hx) * kh, nz = fdr_hz + (car_hz - fdr_hz) * kh;
+        float nl = my_sqrt(nx * nx + nz * nz);
+        if (nl > 0.2f) { fdr_hx = nx / nl; fdr_hz = nz / nl; }
+    }
+    fdr_t += dts;
+    float fx = fdr_hx, fz = fdr_hz, rx = fdr_hz, rz = -fdr_hx;
+    float ground = (float)car_pos[1] - 1.15f;
+    if (fdr_world) {
+        if (fdr_anchor_pending) {
+            float ahead = 30.0f + spd * 0.7f, side = fdr_side * (6.5f + 3.0f * fdr_r1);
+            fdr_anchor[0] = car_pos[0] + (double)(fx * ahead + rx * side);
+            fdr_anchor[2] = car_pos[2] + (double)(fz * ahead + rz * side);
+            fdr_anchor[1] = (double)(ground + 1.0f + 1.2f * fdr_r2);
+            fdr_anchor_pending = 0; fdr_passed = 0; fdr_pt = 0.0f;
+        }
+        float pd = (float)((car_pos[0] - fdr_anchor[0]) * fx + (car_pos[2] - fdr_anchor[2]) * fz);
+        if (pd > 8.0f) fdr_passed = 1;
+        if (fdr_passed) fdr_pt += dts;
+    }
+    int end_shot = fdr_world ? (fdr_pt > 1.5f || fdr_t > 14.0f) : (fdr_forced < 0 && fdr_t >= fdr_dur);
+    if (end_shot) fdr_pick(fdr_forced, 0);
+    float h = 1.5f, F = 0.0f, R = 0.0f, w = fdr_t < 0.9f ? 3.2f : 1.6f, lead = 0.0f;
+    float des[3], vdes[3] = {0.0f, 0.0f, 0.0f};
+    switch (fdr_shot) {
+        case 0: F = -clampf(8.0f + 0.12f * spd, 8.0f, 18.0f); R = fdr_side * (1.0f + 2.0f * fdr_r1); h = 3.4f + 2.2f * fdr_r2; lead = clampf(spd * 0.1f, 0.0f, 5.0f); break;
+        case 1: F = -(5.0f + 0.05f * spd); R = fdr_side * (1.4f + fdr_r1); h = 0.8f + 0.5f * fdr_r2; lead = clampf(spd * 0.1f, 0.0f, 5.0f); break;
+        case 2: { float a = fdr_a0 + fdr_om * fdr_t, rad = 7.0f + 3.5f * fdr_r2 + 0.03f * spd; F = rad * my_cos(a); R = rad * my_sin(a); h = 2.0f + 1.8f * fdr_r1; } break;
+        case 3: break;
+        case 4: F = 1.0f + 2.0f * my_sin(fdr_t * 0.5f); R = fdr_side * (5.2f + 0.035f * spd + 1.5f * fdr_r1); h = 1.0f + 0.7f * fdr_r2; break;
+        case 5: F = -4.0f; R = 0.0f; h = 14.0f + 0.12f * spd + 4.0f * fdr_r1; w = fdr_t < 0.9f ? 3.0f : 1.3f; break;
+        case 6: { float k = clampf(fdr_t / fdr_dur, 0.0f, 1.0f); k = k * k * (3.0f - 2.0f * k); F = -(5.0f + 9.0f * k); R = fdr_side * 2.5f * (1.0f - k); h = 1.1f + 16.0f * k; } break;
+        default: F = -(6.8f + 0.04f * spd); R = fdr_side * (3.2f + 1.0f * my_sin(fdr_t * 0.4f)); h = 1.5f + 0.5f * my_sin(fdr_t * 0.35f); lead = clampf(spd * 0.08f, 0.0f, 4.0f); break;
+    }
+    if (fdr_world) {
+        des[0] = (float)(fdr_anchor[0] - car_pos[0]); des[1] = (float)(fdr_anchor[1] - car_pos[1]); des[2] = (float)(fdr_anchor[2] - car_pos[2]);
+        vdes[0] = -cvx; vdes[1] = -cvy; vdes[2] = -cvz;
+        w = fdr_t < 0.9f ? 3.0f : 2.2f;
+    } else {
+        des[0] = fx * F + rx * R; des[1] = ground + h - (float)car_pos[1]; des[2] = fz * F + rz * R;
+    }
+    for (int i = 0; i < 3; ++i) {
+        float acc = w * w * (des[i] - fdr_off[i]) - 2.0f * w * (fdr_v[i] - vdes[i]);
+        fdr_v[i] += acc * dts;
+        fdr_off[i] += fdr_v[i] * dts;
+    }
+    {
+        /* nicht durch das Auto fliegen */
+        float hd = my_sqrt(fdr_off[0] * fdr_off[0] + fdr_off[2] * fdr_off[2]);
+        if (hd < 3.0f && fdr_off[1] > -2.2f && fdr_off[1] < 2.2f) {
+            if (hd < 0.05f) { fdr_off[0] = -fx * 3.0f; fdr_off[2] = -fz * 3.0f; }
+            else { fdr_off[0] *= 3.0f / hd; fdr_off[2] *= 3.0f / hd; }
+        }
+        float miny = ground + 0.55f - (float)car_pos[1];
+        if (fdr_off[1] < miny) { fdr_off[1] = miny; if (fdr_v[1] < 0.0f) fdr_v[1] = 0.0f; }
+    }
+    drone_pos[0] = car_pos[0] + (double)fdr_off[0];
+    drone_pos[1] = car_pos[1] + (double)fdr_off[1];
+    drone_pos[2] = car_pos[2] + (double)fdr_off[2];
+    drone_vel[0] = cvx + fdr_v[0]; drone_vel[1] = cvy + fdr_v[1]; drone_vel[2] = cvz + fdr_v[2];
+    drone_anchor[0] = car_pos[0]; drone_anchor[1] = car_pos[1]; drone_anchor[2] = car_pos[2]; /* Reichweiten-Grenze folgt dem Auto */
+    {
+        float tx = (float)(car_pos[0] - drone_pos[0]) + fx * lead, tz = (float)(car_pos[2] - drone_pos[2]) + fz * lead;
+        float ty = (float)(car_pos[1] - drone_pos[1]) - 0.1f;
+        float hd = my_sqrt(tx * tx + tz * tz);
+        float thx, thz;
+        if (hd > 1.5f) { thx = tx / hd; thz = tz / hd; } else { thx = fx; thz = fz; }
+        float k = clampf(dts * (fdr_t < 0.9f ? 9.0f : 6.5f), 0.0f, 1.0f);
+        float nx = drone_hx + (thx - drone_hx) * k, nz = drone_hz + (thz - drone_hz) * k;
+        float nl = my_sqrt(nx * nx + nz * nz);
+        if (nl > 0.2f) { drone_hx = nx / nl; drone_hz = nz / nl; }
+        float tp = clampf(my_atan2(ty, hd > 0.5f ? hd : 0.5f), -1.4f, 0.9f);
+        drone_pitch += (tp - drone_pitch) * k;
+    }
+}
+
 static void drone_start(void *camera, unsigned view) {
     unsigned pos_off = view <= 3 ? 0x190u : 0x1a0u;
     unsigned dir_off = view <= 3 ? 0x1b0u : 0x1c0u;
@@ -362,7 +500,7 @@ static void drone_start(void *camera, unsigned view) {
     spike_logs = 0;
     jump_logs = 0;
     mouse_yaw_rate = mouse_pitch_rate = 0.0f;
-    walk_mode = 0; focus_on = 0; follow_on = 0;
+    walk_mode = 0; walk_direct = 0; fdr_on = 0; fdr_init = 0; fdr_direct = 0; focus_on = 0; follow_on = 0;
     car_pos[0] = drone_anchor[0]; car_pos[1] = drone_anchor[1]; car_pos[2] = drone_anchor[2]; have_car_pos = 1;
     walk_amp = 0.0f; pend_yaw = pend_pitch = 0.0f;
     drone_on = 1;
@@ -465,6 +603,7 @@ static void driver_hide_set(int hide) {
 static void drone_stop(void) {
     gameplay_lock(0); driver_on = 1; hide_mode = 0; pad_mode = 0;
     seat_mode(-1); /* aktuelle Sitzposition speichern */
+    walk_direct = 0; fdr_on = 0; fdr_init = 0; fdr_direct = 0;
     drone_on = 0; passenger_on = 0; rear_on = 0; drv_on = 0; fix_cam = 0; cinema_on = 0;
     cur_roll = 0.0f; bank_roll = 0.0f;
     drone_camera_ptr = 0;
@@ -958,6 +1097,8 @@ static void drone_frame(void *camera, float dt, unsigned view) {
             /* Reichweiten-Grenze folgt dem Auto, sonst haelt sie dich bei hohem Tempo nach 400 m an der Stelle fest */
             drone_anchor[0] = car_pos[0]; drone_anchor[1] = car_pos[1]; drone_anchor[2] = car_pos[2];
         }
+    } else if (fdr_on && have_car_pos && !passenger_on) {
+        fdr_update(dt);
     } else {
     float vs = clampf(dt * 3.5f, 0.0f, 1.0f);
     for (int i = 0; i < 3; ++i) {
@@ -1266,7 +1407,7 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
         }
         return;
     }
-    int toggle = game_input_key_down(KEY_TOGGLE);
+    int toggle = focused && act_down(CM_A_TOGGLE);
     if (drone_on && view <= 3) {
         drone_stop(); /* Aussenkamera nicht unterstuetzt: nur Ego-Ansicht */
     }
@@ -1310,7 +1451,7 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
     toggle_was_down = toggle;
     {
         static int bk;
-        int bd = focused && game_input_key_down(0x78); /* F9 = Fahrer aus/an */
+        int bd = focused && act_down(CM_A_HIDEDRIVER); /* F9 = Fahrer aus/an */
         if (bd && !bk) driver_hide_set(!drv_hidden);
         bk = bd;
     }
@@ -1344,7 +1485,7 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
         combo_was = combo;
         static int yk, l3_was;
         int l3 = autodrive_game_buttons(&ctl, &btn) >= 0 && (btn & 0x0040u) != 0u; /* L3 (linker Stick druecken) */
-        int yd = (focused && game_input_key_down(0x59)) || l3;                      /* Y bzw. L3: Blick wieder nach vorn */
+        int yd = (focused && act_down(CM_A_LOOKFWD)) || l3;                      /* Y bzw. L3: Blick wieder nach vorn */
         if (yd && !yk && !(l3 && l3_was) && drone_on && passenger_on && !cinema_on) {
             { float ys = fix_cam == 4 ? -1.0f : 1.0f; drone_hx = car_hx * ys; drone_hz = car_hz * ys; } drone_pitch = 0.0f; pend_yaw = pend_pitch = 0.0f;
             look_yaw_rate = look_pitch_rate = 0.0f; mouse_yaw_rate = mouse_pitch_rate = 0.0f;
@@ -1358,8 +1499,21 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
     }
     {
         static int pk;
-        int pd = focused && game_input_key_down(0x50);
-        if (pd && !pk && drone_on) {
+        int pd = focused && act_down(CM_A_WALK);
+        if (pd && !pk && !drone_on && view > 3 && view < 7) {
+            /* Walk-Taste direkt aus dem Fahren: Drone starten und gleich im Walk-Mode landen */
+            drone_start(camera, view);
+            if (drone_on) {
+                walk_mode = 1; walk_direct = 1;
+                ground_ref = drone_anchor[1] - 1.15;
+                trail_n = 0; trail_head = 0;
+                eye_height = 1.6f;
+                put("DRONE-MODE walk (direct start)\r\n"); flush();
+            }
+        } else if (pd && !pk && drone_on && walk_mode && walk_direct) {
+            drone_stop(); /* direkt gestartet: dieselbe Taste geht zurueck ins Fahren */
+            put("DRONE-MODE walk off (direct)\r\n"); flush();
+        } else if (pd && !pk && drone_on) {
             walk_mode = !walk_mode;
             if (walk_mode) {
                 ground_ref = drone_anchor[1] - 1.15;
@@ -1369,8 +1523,32 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
             put(walk_mode ? "DRONE-MODE walk\r\n" : "DRONE-MODE drone\r\n"); flush();
         }
         pk = pd;
+        {
+            /* Follow-Drone: T = an/aus (auch direkt aus dem Fahren), Z = naechster Shot (Auto -> 0..7 -> Auto) */
+            static int fk, nk;
+            if (fdr_on && (walk_mode || passenger_on || rear_on || fix_cam || cinema_on || !drone_on)) { fdr_on = 0; fdr_init = 0; fdr_direct = 0; }
+            int fd = focused && act_down(CM_A_FOLLOWDRONE);
+            if (fd && !fk) {
+                if (fdr_on && drone_on) {
+                    if (fdr_direct) drone_stop(); else { fdr_on = 0; fdr_init = 0; }
+                    put("FOLLOW-DRONE off\r\n"); flush();
+                } else if (!drone_on && view > 3 && view < 7) {
+                    drone_start(camera, view);
+                    if (drone_on) { fdr_on = 1; fdr_init = 0; fdr_direct = 1; put("FOLLOW-DRONE on (direct start)\r\n"); flush(); }
+                } else if (drone_on && !walk_mode && !passenger_on && !rear_on && !fix_cam && !cinema_on) {
+                    fdr_on = 1; fdr_init = 0; fdr_direct = 0; put("FOLLOW-DRONE on\r\n"); flush();
+                }
+            }
+            fk = fd;
+            int nd = focused && act_down(CM_A_NEXTSHOT);
+            if (nd && !nk && fdr_on && fdr_init) {
+                fdr_forced = fdr_forced >= FDR_SHOTS - 1 ? -1 : fdr_forced + 1;
+                fdr_pick(fdr_forced, 0);
+            }
+            nk = nd;
+        }
         static int mk, ck2;
-        int md = (focused && game_input_key_down(0x4D)) || req_m; /* M = Beifahrer-Modus */
+        int md = (focused && act_down(CM_A_PASSENGER)) || req_m; /* M = Beifahrer-Modus */
         req_m = 0;
         if (md && !mk && drone_on) {
             passenger_on = !passenger_on;
@@ -1394,7 +1572,7 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
         }
         mk = md;
         static int xk;
-        int xd = (focused && game_input_key_down(0x58)) || req_x;
+        int xd = (focused && act_down(CM_A_REAR)) || req_x;
         req_x = 0; /* X = 360-Kamera hinten oben am Auto (immer 0,5x) */
         if (xd && !xk && drone_on) {
             if (!rear_on) {
@@ -1418,10 +1596,10 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
         xk = xd;
         {
             static int nk, bk, ik;
-            int id = focused && game_input_key_down(0x49); /* I: Steuerung Tastatur <-> Controller wechseln */
+            int id = focused && act_down(CM_A_INPUTMODE); /* I: Steuerung Tastatur <-> Controller wechseln */
             if (id && !ik) { pad_mode = !pad_mode; put(pad_mode ? "DRONE-INPUT controller\r\n" : "DRONE-INPUT keyboard\r\n"); flush(); }
             ik = id;
-            int nd = focused && game_input_key_down(0x4E); /* N bzw. RB+X: Auto-Eingabe sperren an/aus */
+            int nd = focused && act_down(CM_A_DRIVELOCK); /* N bzw. RB+X: Auto-Eingabe sperren an/aus */
             int bd = (pad_btn & 0x0200u) != 0 && (pad_btn & 0x4000u) != 0; /* RB + X */
             if (drone_on && ((nd && !nk) || (bd && !bk))) {
                 driver_on = !driver_on;
@@ -1433,7 +1611,7 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
         static int fk[5];
         for (int fn = 1; fn <= 4; ++fn) {
             /* Tasten 1-4: Dach / Dashcam / Armaturenbrett / Front-Chase. Fest am Auto, keine Effekte, nur per Maus/Stick drehbar */
-            int fd = (focused && game_input_key_down(0x30 + fn)) || req_fix == fn;
+            int fd = (focused && act_down(CM_A_FIX1 + fn - 1)) || req_fix == fn;
             if (fd && !fk[fn] && drone_on) {
                 if (fix_cam == fn) {
                     fix_cam = 0; rear_on = 0; passenger_on = 0; seat_ok = 0; seat_mode(-1); zoom_target = 1.0f;
@@ -1459,7 +1637,7 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
         }
         req_fix = 0;
         static int hk;
-        int hd = (focused && game_input_key_down(0x48)) || req_h; /* H = Fahrer-Sitz (wie Beifahrer, aber auf dem Fahrerplatz) */
+        int hd = (focused && act_down(CM_A_DRIVERSEAT)) || req_h; /* H = Fahrer-Sitz (wie Beifahrer, aber auf dem Fahrerplatz) */
         req_h = 0;
         if (hd && !hk && drone_on && passenger_on && !rear_on && !fix_cam) {
             if (!drv_on) { drv_on = 1; cinema_on = 0; seat_mode(1); }
@@ -1467,43 +1645,43 @@ void drone_probe_frame(void *camera, unsigned view, const unsigned char *image, 
             put(drv_on ? "DRONE-DRIVERSEAT on\r\n" : "DRONE-DRIVERSEAT off\r\n"); flush();
         }
         hk = hd;
-        int cd2 = focused && game_input_key_down(0x43); /* C = Seite wechseln */
+        int cd2 = focused && act_down(CM_A_SIDE); /* C = Seite wechseln */
         if (cd2 && !ck2 && drone_on && passenger_on && !rear_on && !drv_on && !fix_cam) { passenger_side = -passenger_side; seat_r = -seat_r; put("DRONE-PASSENGER side\r\n"); flush(); }
         ck2 = cd2;
         static int tk;
-        int td = focused && game_input_key_down(0x55); /* U = Zittern an/aus */
+        int td = focused && act_down(CM_A_SHAKE); /* U = Zittern an/aus */
         if (td && !tk && drone_on) {
             shake_on = !shake_on;
             put(shake_on ? "DRONE-SHAKE on\r\n" : "DRONE-SHAKE off\r\n"); flush();
         }
         tk = td;
         static int vk;
-        int vd = focused && game_input_key_down(0x56); /* V = dem Auto hinterherlaufen */
+        int vd = focused && act_down(CM_A_FOLLOWCAR); /* V = dem Auto hinterherlaufen */
         if (vd && !vk && drone_on && walk_mode) { follow_on = !follow_on; put(follow_on ? "DRONE-FOLLOW on\r\n" : "DRONE-FOLLOW off\r\n"); flush(); }
         vk = vd;
         static int lk;
-        int ld = focused && game_input_key_down(0x4C); /* L = Cinema-Modus (nur Beifahrer) */
+        int ld = focused && act_down(CM_A_CINEMA); /* L = Cinema-Modus (nur Beifahrer) */
         if (ld && !lk && drone_on && passenger_on && !rear_on && !fix_cam) { cinema_on = !cinema_on; cin_dur = 0.0f; cin_seed = qpc_lo * 2654435761u; cin_n = 0; cin_shot = -1; cin_prev = -1; cin_yv = cin_pv = 0.0f; put(cinema_on ? "DRONE-CINEMA on\r\n" : "DRONE-CINEMA off\r\n"); flush(); }
         lk = ld;
         static int gk;
-        int gd = focused && game_input_key_down(0x47); /* G = Auto im Blick halten */
+        int gd = focused && act_down(CM_A_FOCUSCAR); /* G = Auto im Blick halten */
         if (gd && !gk && drone_on) { focus_on = !focus_on; put(focus_on ? "DRONE-FOCUS-CAR on\r\n" : "DRONE-FOCUS-CAR off\r\n"); flush(); }
         gk = gd;
         static int kk, f7k, f8k;
-        int kd = focused && game_input_key_down(0x4B); /* K = verbesserte Ego-Kamera an/aus */
+        int kd = focused && act_down(CM_A_EGO); /* K = verbesserte Ego-Kamera an/aus */
         static int jk;
-        int jd = focused && game_input_key_down(0x4A); /* J = verbesserte Verfolger-Kamera an/aus */
+        int jd = focused && act_down(CM_A_CHASE); /* J = verbesserte Verfolger-Kamera an/aus */
         if (jd && !jk) { chase_on = !chase_on; put(chase_on ? "CHASE-CAM on\r\n" : "CHASE-CAM off\r\n"); flush(); }
         jk = jd;
         if (kd && !kk) { ego_on = !ego_on; put(ego_on ? "EGO-CAM on\r\n" : "EGO-CAM off\r\n"); flush(); }
         kk = kd;
-        int f7 = focused && game_input_key_down(0x76), f8 = focused && game_input_key_down(0x77); /* F7 weniger, F8 mehr */
+        int f7 = focused && act_down(CM_A_EGOLESS), f8 = focused && act_down(CM_A_EGOMORE); /* F7 weniger, F8 mehr */
         if (f7 && !f7k && ego_level_pct > 10) ego_level_pct -= 10;
         if (f8 && !f8k && ego_level_pct < 200) ego_level_pct += 10;
         if ((f7 && !f7k) || (f8 && !f8k)) { put("EGO-CAM level "); put_number((unsigned)ego_level_pct); put("\r\n"); flush(); }
         f7k = f7; f8k = f8;
         static int f5k, f6k;
-        int f5 = focused && game_input_key_down(0x74), f6 = focused && game_input_key_down(0x75); /* F5 weniger, F6 mehr Wippen */
+        int f5 = focused && act_down(CM_A_WALKLESS), f6 = focused && act_down(CM_A_WALKMORE); /* F5 weniger, F6 mehr Wippen */
         if (f5 && !f5k && drone_on && walk_level_pct > 10) walk_level_pct -= 10;
         if (f6 && !f6k && drone_on && walk_level_pct < 200) walk_level_pct += 10;
         if ((f5 && !f5k) || (f6 && !f6k)) { put("DRONE-WALKLEVEL "); put_number((unsigned)walk_level_pct); put("\r\n"); flush(); }

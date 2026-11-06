@@ -20,6 +20,7 @@ if exist "!TARGET!\mods\Camera Mods" (
 ) else (
   echo Camera Mods plugin was not installed.
 )
+del "!TARGET!\fh2-mods\CameraModsMenu.dll" 2>nul
 del "!TARGET!\CamMods_version.txt" 2>nul
 echo Extra Options and your FH2_ExtraOptions.ini were left untouched.
 pause

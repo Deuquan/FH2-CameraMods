@@ -4,7 +4,7 @@ Extra cameras for the Azimuth (PC) version of Forza Horizon 2, as a **plugin for
 [Extra Options](https://github.com/RokkuDayo/ForzaHorizon2_ExtraOptions)** by RokkuDayo (GPL, see LICENSE).
 It does **not** replace `winmm.dll` - it installs into Extra Options' `mods` folder.
 
-**Current version: v1.2.2** - plugin build, tested with Extra Options 0.4.4 and the latest Azimuth.
+**Current version: v1.3.0** - plugin build, tested with Extra Options 0.4.4 and the latest Azimuth.
 
 **Publisher / Author of the camera mods:** Deuquan ([GitHub](https://github.com/Deuquan/FH2-CameraMods))
 
@@ -46,7 +46,9 @@ Put the official Extra Options `winmm.dll` back first, then run `install.bat` of
 | `Q` / `F` | Down |
 | `Shift` / `Ctrl` | Fast / very slow |
 | Mouse wheel, `PgUp`/`PgDn` | Zoom |
-| `P` | Walk mode |
+| `P` | Walk mode (works directly from driving in cockpit/hood/bumper view, no drone mode needed first; press it again to leave) |
+| `T` | **Follow drone**: you drive, the drone films your car (chase, low chase, orbit, fly-by, side tracking, top view, rising reveal). Works directly from driving; press again to leave. |
+| `Z` | Follow drone: next shot (auto cut -> shot 1..8 -> auto) |
 | `V` | Walk-follow the car |
 | `G` | Keep the car in view |
 | `M` | Passenger cam |
@@ -73,6 +75,13 @@ Put the official Extra Options `winmm.dll` back first, then run `install.bat` of
 - `LB` (from the driver view) cycles: Passenger -> Driver seat -> 360 -> off. In the chase views `LB` toggles the enhanced chase cam.
 - `L3` resets the view forward.
 - `RB` still cycles the game's own cameras.
+
+## Changing the keys (v1.3.0)
+All switch keys can be rebound in the game: **Pause > Settings > MODS > Installed mods > Camera Mods**. Open **Keys (any key on the keyboard)**, pick an action, press A / Enter and then press **any key** (hold Ctrl, Shift or Alt for a combination). This needs the [FH2 Mod Platform](https://github.com/Trinculo54/fh2-mod-platform/releases) 2.8.0 or newer (the same platform that Community Garage uses). Without it Camera Mods simply keeps the default keys listed above.
+
+- The **Keys** page is the first thing under Installed mods > Camera Mods and takes every key on the keyboard. Keys can also be written by hand into `CameraMods\keybinds.ini` (next to azimuth.exe), for example `Toggle=O | Off` or `HideDriver=Ctrl+F9 | LB+RB+Y`.
+- Movement keys (WASD, QE, arrows, Shift, Ctrl) and the controller sticks stay fixed.
+- The existing controller shortcuts (LB cycle, RB+X, L3) keep working.
 
 ## Replay
 In a replay, switch the replay camera with `X` until you are in the cockpit (driver) view, then press `O`. Drone and walk mode work from there, also while the replay is paused.

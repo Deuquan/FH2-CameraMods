@@ -214,7 +214,7 @@ static DWORD WINAPI overlay_thread(LPVOID unused) {
     HMODULE user32 = LoadLibraryExW(L"user32.dll", 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
     HMODULE gdi32 = LoadLibraryExW(L"gdi32.dll", 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
     HMODULE kernel = LoadLibraryExW(L"kernel32.dll", 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    HMODULE mag = LoadLibraryExW(L"magnification.dll", 0, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    HMODULE mag = 0; /* the Windows magnifier colour filter is not used (only the filter "off" exists); not loaded, so Wine/Proton never touches it */
     if (!user32 || !gdi32 || !kernel) { log_append("OVERLAY: libs missing\r\n"); return 0; }
     api_create_window = (FnCreateWindow)(uintptr_t)GetProcAddress(user32, "CreateWindowExA");
     api_show = (FnShow)(uintptr_t)GetProcAddress(user32, "ShowWindow");

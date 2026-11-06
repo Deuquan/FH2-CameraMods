@@ -1,1 +1,1 @@
-CamMods v1.2.2 (plugin)
+CamMods v1.3.0 (plugin)

@@ -43,6 +43,15 @@ if exist "!TARGET!\CamMods_version.txt" (
 
 echo Installing into: !TARGET!
 xcopy /e /i /y "%SRC%mods" "!TARGET!\mods" >nul || ( echo ERROR: copy failed. & pause & exit /b 1 )
+rem Rebindable keys on the Mods page need the FH2 Mod Platform (d3dcompiler_47.dll / DWrite.dll + fh2-mods folder), version 2.8.0 or newer
+if exist "%SRC%fh2-mods\CameraModsMenu.dll" (
+  if exist "!TARGET!\fh2-mods" (
+    copy /y "%SRC%fh2-mods\CameraModsMenu.dll" "!TARGET!\fh2-mods\" >nul && echo Mods-page bridge installed ^(fh2-mods\CameraModsMenu.dll^): keys can be changed in Pause - Settings - MODS.
+  ) else (
+    echo Note: the FH2 Mod Platform ^(fh2-mods folder^) was not found. Camera Mods works with its default keys.
+    echo To change keys in the game menu, install the platform 2.8.0 or newer: https://github.com/Trinculo54/fh2-mod-platform/releases and run this installer again.
+  )
+)
 copy /y "%SRC%VERSION.txt" "!TARGET!\CamMods_version.txt" >nul 2>nul
 echo.
 echo Done. Camera Mods was installed as an Extra Options plugin ^(mods\Camera Mods^).

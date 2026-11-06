@@ -64,4 +64,4 @@ DeleteCriticalSection
 
     CompareStringOrdinal
     Sleep
-
+    CreateDirectoryW

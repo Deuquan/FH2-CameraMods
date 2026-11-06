@@ -17,7 +17,7 @@
 #include <xmmintrin.h>
 
 #define PLUGIN_NAME "CameraMods"
-#define PLUGIN_VERSION "1.2.2"
+#define PLUGIN_VERSION "1.3.0"
 #define EXPECTED_IMAGE_SIZE 0x3a18000u
 
 static unsigned char *image;
@@ -629,6 +629,10 @@ static void install_hooks(void) {
     hook_slot_expect(HOOD + 0x1d0, 0xa41740, (void *)h_car_c);
     hook_slot_expect(BUMPER + 0x1d0, 0xa41740, (void *)h_car_c);
 }
+
+/* Fuer die Plattform-Bruecke (CameraModsMenu.dll): umbelegbare Tasten kommen als Ausloeser statt per Tastenabfrage */
+__declspec(dllexport) void CM_Attach(void) { drone_probe_attach(); }
+__declspec(dllexport) void CM_Trigger(int action) { drone_probe_trigger(action); }
 
 __declspec(dllexport) BOOL WINAPI FH2PluginInitialize(const FH2PluginContext *context) {
     host = context;
